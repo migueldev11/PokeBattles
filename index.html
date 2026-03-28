@@ -168,7 +168,9 @@
     </div>
 </div>
 <script>
-const ALL_IDS = [...Array.from({length: 251}, (_, i) => i + 1), 493];
+// Lista de IDs que possuem Mega Evolução Oficial
+const OFFICIAL_MEGAS = [3, 6, 9, 15, 18, 65, 80, 94, 115, 127, 130, 142, 150, 181, 208, 212, 214, 229, 248, 254, 257, 260, 282, 302, 303, 306, 308, 310, 319, 323, 334, 354, 359, 362, 373, 376, 380, 381, 384, 428, 445, 448, 460, 475, 531, 719];
+
 const TYPE_CHART = {
     fire: { grass: 2, water: 0.5, ice: 2, fire: 0.5, steel: 2 },
     water: { fire: 2, ground: 2, rock: 2, water: 0.5 },
@@ -177,98 +179,60 @@ const TYPE_CHART = {
     psychic: { fighting: 2, poison: 2, psychic: 0.5 }
 };
 
-// Se não tiver inventário salvo, ganha 10 aleatórios iniciais
-let myInventory = JSON.parse(localStorage.getItem('ps_inv'));
-if(!myInventory) {
-    myInventory = Array.from({length: 10}, () => ALL_IDS[Math.floor(Math.random()*ALL_IDS.length)]);
-    localStorage.setItem('ps_inv', JSON.stringify(myInventory));
-}
+let myInventory = JSON.parse(localStorage.getItem('ps_inv')) || [1, 4, 7, 25, 133, 150, 212, 243, 249, 493];
 
 let state = {
-    coins: parseInt(localStorage.getItem('ps_coins')) || 1500, // Começa com 1500 pra testar o Gacha!
+    coins: parseInt(localStorage.getItem('ps_coins')) || 500,
     pTeam: [], eTeam: [], pIdx: 0, eIdx: 0,
     selected: [], isMultiplayer: false,
     peer: null, conn: null, myTurn: false, role: null, megaUsed: false,
-    myTeamReady: false, enemyTeamData: null // <-- AQUI ESTÁ A CORREÇÃO DO TRAVAMENTO
+    isWaiting: false, // Nova trava para evitar bugs de troca
+    myTeamReady: false, enemyTeamData: null
 };
 
+// --- AUDIO ENGINE ---
 function playHitSound(isSuper = false) {
     const ctx = new (window.AudioContext || window.webkitAudioContext)();
     const osc = ctx.createOscillator();
+    const gain = ctx.createGain();
     osc.type = isSuper ? 'sawtooth' : 'square';
-    osc.frequency.setValueAtTime(isSuper ? 300 : 150, ctx.currentTime);
-    osc.frequency.exponentialRampToValueAtTime(40, ctx.currentTime + 0.15);
-    osc.connect(ctx.destination);
-    osc.start(); osc.stop(ctx.currentTime + 0.15);
+    osc.frequency.setValueAtTime(isSuper ? 250 : 150, ctx.currentTime);
+    osc.frequency.exponentialRampToValueAtTime(10, ctx.currentTime + 0.2);
+    gain.gain.setValueAtTime(0.1, ctx.currentTime);
+    osc.connect(gain); gain.connect(ctx.destination);
+    osc.start(); osc.stop(ctx.currentTime + 0.2);
 }
 
 function playCry(url) { if(url) new Audio(url).play().catch(()=>{}); }
 
+// --- UI NAVIGATION ---
 function showScreen(id) {
     document.querySelectorAll('.screen').forEach(s => s.classList.remove('active'));
     document.getElementById(id).classList.add('active');
     updateHUD();
 }
+
 function updateHUD() {
     document.getElementById('h-coins').innerText = `🪙 ${state.coins}`;
     document.getElementById('g-coins').innerText = `🪙 ${state.coins}`;
     localStorage.setItem('ps_coins', state.coins);
 }
 
-function showSelect(multi) {
-    state.isMultiplayer = multi;
-    state.selected = []; state.myTeamReady = false; state.enemyTeamData = null;
-    document.getElementById('select-title').innerText = multi ? "EQUIPE 1V1 (ONLINE)" : "EQUIPE SOLO";
-    renderInventory();
-    showScreen('screen-select');
-}
-
-function showMultiMenu() { showScreen('screen-multi-menu'); }
-
-// --- GACHA SYSTEM ---
+// --- GACHA ---
 function rollGacha() {
     if(state.coins < 100) return alert("Moedas insuficientes!");
     state.coins -= 100;
-    const newId = ALL_IDS[Math.floor(Math.random() * ALL_IDS.length)];
-    const resDiv = document.getElementById('gacha-result');
-    resDiv.innerHTML = `<div class="spinner"></div>`;
-    
-    setTimeout(() => {
-        myInventory.push(newId);
-        localStorage.setItem('ps_inv', JSON.stringify(myInventory));
-        resDiv.innerHTML = `
-            <img src="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/${newId}.png" style="width: 80px;">
-            <p style="color:var(--pk-yellow); font-weight:bold;">NOVO POKÉMON ADICIONADO!</p>
-        `;
-        updateHUD();
-    }, 1000);
+    const newId = Math.floor(Math.random() * 251) + 1;
+    myInventory.push(newId);
+    localStorage.setItem('ps_inv', JSON.stringify(myInventory));
+    document.getElementById('gacha-result').innerHTML = `
+        <img src="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/${newId}.png" style="width: 80px;">
+        <p style="color:var(--pk-yellow);">GANHOU: #${newId}!</p>
+    `;
+    updateHUD();
 }
 
-function renderInventory() {
-    const list = document.getElementById('pkmn-list');
-    list.innerHTML = '';
-    // Tira duplicatas para a tela de escolha
-    const uniqueInv = [...new Set(myInventory)]; 
-    uniqueInv.forEach(id => {
-        const d = document.createElement('div');
-        d.className = 'pkmn-card';
-        d.innerHTML = `<img src="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/${id}.png"><p>#${id}</p>`;
-        d.onclick = () => {
-            if(state.selected.includes(id)) {
-                state.selected = state.selected.filter(i => i !== id);
-                d.classList.remove('selected');
-            } else if(state.selected.length < 6) {
-                state.selected.push(id);
-                d.classList.add('selected');
-            }
-            document.getElementById('sel-count').innerText = `${state.selected.length}/6`;
-            document.getElementById('btn-confirm').disabled = state.selected.length !== 6;
-        };
-        list.appendChild(d);
-    });
-}
-
-// --- MULTIPLAYER P2P ---
+// --- P2P CORE ---
 function createRoom() {
     state.peer = new Peer();
     state.peer.on('open', id => {
@@ -278,9 +242,10 @@ function createRoom() {
     });
     state.peer.on('connection', c => { state.conn = c; setupConn(); });
 }
+
 function joinRoom() {
     const id = document.getElementById('join-id').value.trim();
-    if(!id) return alert("Cole o ID do amigo primeiro!");
+    if(!id) return alert("ID inválido");
     state.peer = new Peer();
     state.peer.on('open', () => {
         state.conn = state.peer.connect(id);
@@ -288,6 +253,7 @@ function joinRoom() {
         setupConn();
     });
 }
+
 function setupConn() {
     state.conn.on('open', () => {
         showSelect(true);
@@ -295,109 +261,53 @@ function setupConn() {
     });
 }
 
-// --- LOGICA PROFUNDA DE STATUS ---
+// --- BATTLE LOGIC ---
 async function fetchPkmnData(id) {
-    try {
-        const r = await fetch(`https://pokeapi.co/api/v2/pokemon/${id}`);
-        const d = await r.json();
-        
-        // Separação Real de Status
-        const stats = {
-            hp: d.stats[0].base_stat * 2.5 + 115, maxHp: d.stats[0].base_stat * 2.5 + 115,
-            atk: d.stats[1].base_stat, def: d.stats[2].base_stat,
-            spa: d.stats[3].base_stat, spd: d.stats[4].base_stat, spe: d.stats[5].base_stat
-        };
-
-        // Pegando detalhes reais de até 4 golpes (Físico, Especial ou Status)
-        const moveLinks = d.moves.sort(() => 0.5 - Math.random()).slice(0, 4);
-        const fetchedMoves = await Promise.all(moveLinks.map(async (m) => {
-            const mRes = await fetch(m.move.url);
-            const mData = await mRes.json();
-            return {
-                name: mData.name.replace(/-/g, ' '),
-                pwr: mData.power || 0, // Se for 0, é golpe de Status!
-                type: mData.type.name,
-                class: mData.damage_class.name // "physical", "special", "status"
-            };
-        }));
-
-        return {
-            name: d.name, type: d.types[0].type.name,
-            ...stats, bst: d.stats.reduce((a,b) => a + b.base_stat, 0),
-            sprite: d.sprites.other['official-artwork'].front_default || d.sprites.front_default,
-            cry: d.cries ? d.cries.latest : null,
-            moves: fetchedMoves, isMega: false, buffs: { atk: 1, def: 1, spa: 1, spd: 1, spe: 1 }
-        };
-    } catch(e) { return null; }
+    const r = await fetch(`https://pokeapi.co/api/v2/pokemon/${id}`);
+    const d = await r.json();
+    const moves = await Promise.all(d.moves.sort(()=>0.5-Math.random()).slice(0,4).map(async m => {
+        const mr = await fetch(m.move.url); const md = await mr.json();
+        return { name: md.name, pwr: md.power || 0, type: md.type.name, class: md.damage_class.name };
+    }));
+    return {
+        id: id, name: d.name, type: d.types[0].type.name,
+        hp: d.stats[0].base_stat * 2 + 110, maxHp: d.stats[0].base_stat * 2 + 110,
+        atk: d.stats[1].base_stat, def: d.stats[2].base_stat,
+        spa: d.stats[3].base_stat, spd: d.stats[4].base_stat,
+        sprite: d.sprites.other['official-artwork'].front_default,
+        cry: d.cries.latest, moves: moves, buffs: { atk: 1, def: 1, spa: 1, spd: 1 }
+    };
 }
 
 async function confirmTeam() {
     document.getElementById('loader').style.display = 'flex';
-    document.getElementById('loader-msg').innerText = "BAIXANDO STATUS E GOLPES...";
-    
     state.pTeam = await Promise.all(state.selected.map(id => fetchPkmnData(id)));
     state.myTeamReady = true;
-
     if(state.isMultiplayer) {
         state.conn.send({ type: 'TEAM_READY', team: state.pTeam });
-        checkStartBattle();
+        if(state.enemyTeamData) startBattle();
     } else {
-        const eIds = Array.from({length: 6}, () => myInventory[Math.floor(Math.random()*myInventory.length)]);
+        const eIds = Array.from({length: 6}, () => Math.floor(Math.random()*251)+1);
         state.eTeam = await Promise.all(eIds.map(id => fetchPkmnData(id)));
         startBattle();
     }
 }
 
-function handleNetworkData(data) {
-    if(data.type === 'TEAM_READY') { 
-        state.enemyTeamData = data.team; 
-        checkStartBattle(); 
-    }
-    if(data.type === 'ATTACK') executeNetworkAttack(data.move);
-    if(data.type === 'MEGA') executeNetworkMega(data.sprite);
-    if(data.type === 'SWITCH') executeNetworkSwitch(data.idx);
-}
-
-// CORREÇÃO DA TELA FANTASMA: Só inicia quando os 2 estiverem prontos
-function checkStartBattle() {
-    if (state.myTeamReady && state.enemyTeamData) {
-        state.eTeam = state.enemyTeamData;
-        startBattle();
-    } else if (state.myTeamReady) {
-        document.getElementById('loader-msg').innerText = "ESPERANDO O AMIGO CONFIRMAR O TIME...";
-    }
-}
-
 function startBattle() {
-    state.pIdx = 0; state.eIdx = 0; state.megaUsed = false;
-    
-    // Quem tem o pokémon mais rápido ataca primeiro no turno 1 (se multiplayer, Host desempata)
-    if(state.isMultiplayer) {
-        const pSpeed = state.pTeam[0].spe;
-        const eSpeed = state.eTeam[0].spe;
-        if(pSpeed > eSpeed) state.myTurn = true;
-        else if (eSpeed > pSpeed) state.myTurn = false;
-        else state.myTurn = state.role === 'host';
-    } else {
-        state.myTurn = true;
-    }
-
+    if(state.isMultiplayer) state.eTeam = state.enemyTeamData;
+    state.myTurn = state.role === 'guest' ? false : true;
     showScreen('screen-battle');
     document.getElementById('loader').style.display = 'none';
     renderTurn();
-    playCry(state.pTeam[state.pIdx].cry);
-    addLog(`Batalha iniciada!`);
+    addLog("Batalha iniciada!");
 }
 
 function renderTurn() {
     const p = state.pTeam[state.pIdx], e = state.eTeam[state.eIdx];
-    document.getElementById('p-name').innerText = p.name.toUpperCase();
     document.getElementById('p-sprite').src = p.sprite;
-    document.getElementById('p-buffs').innerText = renderBuffs(p.buffs);
-    
-    document.getElementById('e-name').innerText = e.name.toUpperCase();
     document.getElementById('e-sprite').src = e.sprite;
-    document.getElementById('e-buffs').innerText = renderBuffs(e.buffs);
+    document.getElementById('p-name').innerText = p.name.toUpperCase();
+    document.getElementById('e-name').innerText = e.name.toUpperCase();
     updateBars();
 
     const cont = document.getElementById('move-cont');
@@ -405,175 +315,139 @@ function renderTurn() {
     p.moves.forEach(m => {
         const b = document.createElement('button');
         b.className = 'btn btn-move';
-        b.disabled = !state.myTurn;
-        
-        let moveClassColor = m.class === 'physical' ? '#ef4444' : m.class === 'special' ? '#3b82f6' : '#94a3b8';
-        
-        b.innerHTML = `
-            <b style="font-size: 0.7rem;">${m.name.toUpperCase()}</b>
-            <span class="type-tag">${m.type.toUpperCase()} | <span style="color:${moveClassColor}">${m.class.toUpperCase()}</span></span>
-        `;
-        b.onclick = () => processAttack(m);
+        // Desativa se não for seu turno OU se o inimigo estiver morto esperando troca
+        b.disabled = !state.myTurn || state.isWaiting;
+        b.innerHTML = `<b>${m.name}</b><br><small>${m.class}</small>`;
+        b.onclick = () => {
+            if(!state.myTurn) return;
+            state.myTurn = false;
+            if(state.isMultiplayer) state.conn.send({ type: 'ATTACK', move: m });
+            executeHit(m, state.pTeam[state.pIdx], state.eTeam[state.eIdx], 'e');
+        };
         cont.appendChild(b);
     });
 
-    if(e.hp <= 0 || p.hp <= 0) toggleBtns(false);
-    document.getElementById('mega-btn').style.display = (p.bst > 450 && !state.megaUsed && !p.isMega) ? 'block' : 'none';
-    document.getElementById('switch-btn').disabled = !state.myTurn;
+    // Botão MEGA oficial
+    const megaBtn = document.getElementById('mega-btn');
+    if (OFFICIAL_MEGAS.includes(p.id) && !state.megaUsed) {
+        megaBtn.style.display = 'block';
+    } else {
+        megaBtn.style.display = 'none';
+    }
 }
 
-function renderBuffs(buffs) {
-    let str = "";
-    if(buffs.atk > 1) str += `ATK↑ `; if(buffs.def > 1) str += `DEF↑ `;
-    if(buffs.spa > 1) str += `SpA↑ `; if(buffs.spd > 1) str += `SpD↑ `;
-    return str;
-}
-
-async function processAttack(move) {
-    if(!state.myTurn) return;
-    state.myTurn = false;
-    toggleBtns(false);
-    if(state.isMultiplayer) state.conn.send({ type: 'ATTACK', move: move });
-
-    await hitAction(move, state.pTeam[state.pIdx], state.eTeam[state.eIdx], 'e');
+async function executeHit(move, atk, def, side) {
+    addLog(`${atk.name.toUpperCase()} usou ${move.name.toUpperCase()}!`);
     
-    if(!state.isMultiplayer && state.eTeam[state.eIdx].hp > 0) setTimeout(botTurn, 1000);
-    checkStatus();
-}
-
-async function hitAction(move, atk, def, side) {
-    addLog(`<b>${atk.name.toUpperCase()}</b> usou ${move.name.toUpperCase()}!`);
-    
-    // GOLPES DE STATUS (Ex: Sword Dance, Growl, etc)
-    if (move.class === 'status' || move.pwr === 0) {
-        addLog(`Os status mudaram!`);
-        atk.buffs.atk += 0.5; // Simplificação para jogo fluir: todo golpe status bufa o atacante
-        playHitSound(false);
-        updateBars();
-        renderTurn();
-        return;
+    if(move.class === 'status') {
+        atk.buffs.atk += 0.2;
+        addLog("Status subiram!");
+    } else {
+        const damage = Math.floor(((move.pwr || 40) * (atk.atk/def.def)) / 5);
+        def.hp -= damage; if(def.hp < 0) def.hp = 0;
+        document.getElementById(side + '-sprite').classList.add('hit-effect');
+        setTimeout(()=>document.getElementById(side + '-sprite').classList.remove('hit-effect'), 200);
+        playHitSound(damage > 20);
     }
 
-    // ANIMAÇÃO
-    const target = document.getElementById(side + '-sprite');
-    target.classList.add('hit-effect');
-    setTimeout(() => target.classList.remove('hit-effect'), 300);
-
-    // CÁLCULO FÍSICO VS ESPECIAL (Agora sim!)
-    let attackStat = move.class === 'physical' ? (atk.atk * atk.buffs.atk) : (atk.spa * atk.buffs.spa);
-    let defenseStat = move.class === 'physical' ? (def.def * def.buffs.def) : (def.spd * def.buffs.spd);
-    
-    let mult = 1;
-    if(TYPE_CHART[move.type]?.[def.type]) mult = TYPE_CHART[move.type][def.type];
-    
-    const dmg = Math.floor((move.pwr * (attackStat / defenseStat) * mult) / 4);
-    def.hp -= dmg; if(def.hp < 0) def.hp = 0;
-    
-    playHitSound(mult > 1);
-
-    if(mult > 1) addLog("<span style='color:var(--pk-yellow)'>É super efetivo!</span>");
-    if(mult < 1) addLog("<span style='color:#94a3b8'>Não é muito efetivo...</span>");
-    
     updateBars();
-    await new Promise(r => setTimeout(r, 600)); // pausa para leitura
+    await new Promise(r => setTimeout(r, 800));
+    checkDeath();
 }
 
-async function botTurn() {
-    const e = state.eTeam[state.eIdx];
-    const move = e.moves[Math.floor(Math.random()*e.moves.length)];
-    await hitAction(move, e, state.pTeam[state.pIdx], 'p');
-    state.myTurn = true;
-    checkStatus();
-    if(state.pTeam[state.pIdx].hp > 0) renderTurn();
-}
+function checkDeath() {
+    const p = state.pTeam[state.pIdx], e = state.eTeam[state.eIdx];
 
-async function executeNetworkAttack(move) {
-    await hitAction(move, state.eTeam[state.eIdx], state.pTeam[state.pIdx], 'p');
-    state.myTurn = true;
-    checkStatus();
-    if(state.pTeam[state.pIdx].hp > 0) renderTurn();
-}
-
-function checkStatus() {
-    if(state.eTeam[state.eIdx].hp <= 0) {
-        state.eIdx++;
-        if(state.eIdx >= 6) return endBattle(true);
-        addLog("Inimigo caiu!");
-        
-        // No multiplayer, quem morre ganha o turno para o próximo atacar primeiro
-        if(state.isMultiplayer) state.myTurn = false; 
-        
-        renderTurn();
-        if(!state.isMultiplayer) playCry(state.eTeam[state.eIdx].cry);
-    } else if(state.pTeam[state.pIdx].hp <= 0) {
-        state.pIdx++;
-        if(state.pIdx >= 6) return endBattle(false);
-        addLog("Seu Pokémon desmaiou!");
+    if(e.hp <= 0) {
+        addLog(`${e.name.toUpperCase()} foi derrotado!`);
+        state.isWaiting = true; // Trava o jogo até o oponente trocar
+        if(!state.isMultiplayer) {
+            setTimeout(() => {
+                state.eIdx++;
+                if(state.eIdx >= 6) return alert("Você Venceu!");
+                state.isWaiting = false;
+                state.myTurn = true;
+                renderTurn();
+            }, 1000);
+        }
+    } else if(p.hp <= 0) {
+        addLog("Seu Pokémon caiu!");
         openSwitch();
+    } else {
+        // Se ninguém morreu, passa o turno se for PvE
+        if(!state.isMultiplayer && !state.myTurn) setTimeout(botTurn, 600);
+        else renderTurn();
+    }
+}
+
+function botTurn() {
+    const e = state.eTeam[state.eIdx];
+    const move = e.moves[Math.floor(Math.random()*4)];
+    executeHit(move, e, state.pTeam[state.pIdx], 'p');
+    state.myTurn = true;
+}
+
+function handleNetworkData(data) {
+    if(data.type === 'TEAM_READY') { state.enemyTeamData = data.team; if(state.myTeamReady) startBattle(); }
+    if(data.type === 'ATTACK') { executeHit(data.move, state.eTeam[state.eIdx], state.pTeam[state.pIdx], 'p'); state.myTurn = true; }
+    if(data.type === 'SWITCH') { 
+        state.eIdx = data.idx; 
+        state.isWaiting = false; // Destrava o jogo porque o oponente trocou
+        state.myTurn = true; 
+        renderTurn(); 
+        addLog("Oponente enviou um novo Pokémon!");
     }
 }
 
 function openSwitch() {
-    if(!state.myTurn && state.isMultiplayer) return; 
+    document.getElementById('switch-modal').style.display = 'flex';
     const list = document.getElementById('switch-list');
     list.innerHTML = '';
-    state.pTeam.forEach((p, i) => {
-        const d = document.createElement('div');
-        d.className = 'pkmn-card';
-        d.style.opacity = p.hp <= 0 ? '0.4' : '1';
-        d.innerHTML = `<img src="${p.sprite}"><p>${p.name}</p>
-                       <div style="background:#0f172a; margin-top:5px; height:6px; width:100%;"><div style="background:var(--hp-green); height:100%; width:${(p.hp/p.maxHp)*100}%"></div></div>`;
-        if(p.hp > 0 && i !== state.pIdx) {
-            d.onclick = () => { 
-                state.pIdx = i; closeSwitch(); 
-                addLog(`Vai! ${p.name.toUpperCase()}!`);
-                if(state.isMultiplayer) {
-                    state.conn.send({ type: 'SWITCH', idx: i });
-                    state.myTurn = false; 
-                } else { setTimeout(botTurn, 800); }
-                renderTurn(); playCry(p.cry);
+    state.pTeam.forEach((pk, i) => {
+        const btn = document.createElement('div');
+        btn.className = 'pkmn-card';
+        btn.innerHTML = `<img src="${pk.sprite}"><p>${pk.name}</p>`;
+        if(pk.hp > 0 && i !== state.pIdx) {
+            btn.onclick = () => {
+                state.pIdx = i;
+                document.getElementById('switch-modal').style.display = 'none';
+                if(state.isMultiplayer) state.conn.send({ type: 'SWITCH', idx: i });
+                state.myTurn = false;
+                state.isWaiting = false;
+                renderTurn();
+                if(!state.isMultiplayer) setTimeout(botTurn, 1000);
             };
-        }
-        list.appendChild(d);
+        } else { btn.style.opacity = '0.3'; }
+        list.appendChild(btn);
     });
-    document.getElementById('switch-modal').style.display = 'flex';
 }
-function closeSwitch() { document.getElementById('switch-modal').style.display = 'none'; }
-function executeNetworkSwitch(idx) { state.eIdx = idx; state.myTurn = true; renderTurn(); playCry(state.eTeam[idx].cry); }
-
-let pendingMega = null;
-function triggerMega() {
-    const p = state.pTeam[state.pIdx];
-    if(p.name === 'charizard' || p.name === 'mewtwo') {
-        pendingMega = p; document.getElementById('mega-xy-modal').style.display = 'flex';
-    } else processMega(p, "");
-}
-function chooseMega(type) { document.getElementById('mega-xy-modal').style.display = 'none'; processMega(pendingMega, "-" + type); }
-
-async function processMega(p, suffix) {
-    playCry(p.cry);
-    try {
-        const res = await fetch(`https://pokeapi.co/api/v2/pokemon/${p.name.toLowerCase()}-mega${suffix}`);
-        if(res.ok) { const d = await res.json(); p.sprite = d.sprites.other['official-artwork'].front_default; }
-    } catch(e) {}
-    p.atk *= 1.4; p.spa *= 1.4; p.name = "MEGA " + p.name; p.isMega = true; state.megaUsed = true;
-    if(state.isMultiplayer) state.conn.send({ type: 'MEGA', sprite: p.sprite });
-    renderTurn();
-}
-function executeNetworkMega(sUrl) { const e = state.eTeam[state.eIdx]; e.sprite = sUrl; e.atk *= 1.4; e.spa *= 1.4; e.name = "MEGA " + e.name; renderTurn(); playCry(e.cry); }
 
 function updateBars() {
-    const p = state.pTeam[state.pIdx], e = state.eTeam[state.eIdx];
-    document.getElementById('p-hp-fill').style.width = (p.hp/p.maxHp)*100 + '%';
-    document.getElementById('e-hp-fill').style.width = (e.hp/e.maxHp)*100 + '%';
+    document.getElementById('p-hp-fill').style.width = (state.pTeam[state.pIdx].hp / state.pTeam[state.pIdx].maxHp * 100) + '%';
+    document.getElementById('e-hp-fill').style.width = (state.eTeam[state.eIdx].hp / state.eTeam[state.eIdx].maxHp * 100) + '%';
 }
 function addLog(m) { const l = document.getElementById('log'); l.innerHTML += `<div>> ${m}</div>`; l.scrollTop = l.scrollHeight; }
-function toggleBtns(on) { document.querySelectorAll('.btn-move').forEach(b => b.disabled = !on); }
-function endBattle(win) {
-    if(win) { state.coins += 200; updateHUD(); alert("VITÓRIA! Você ganhou 200 🪙!"); }
-    else alert("DERROTA!");
-    location.reload();
+
+// Funções de Seleção simples
+function renderInventory() {
+    const grid = document.getElementById('pkmn-list');
+    grid.innerHTML = '';
+    [...new Set(myInventory)].forEach(id => {
+        const d = document.createElement('div');
+        d.className = 'pkmn-card' + (state.selected.includes(id) ? ' selected' : '');
+        d.innerHTML = `<img src="https://raw.githubusercontent.com/PokeAPI/sprites/master/sprites/pokemon/${id}.png"><p>#${id}</p>`;
+        d.onclick = () => {
+            if(state.selected.includes(id)) state.selected = state.selected.filter(i=>i!==id);
+            else if(state.selected.length < 6) state.selected.push(id);
+            document.getElementById('sel-count').innerText = `${state.selected.length}/6`;
+            document.getElementById('btn-confirm').disabled = state.selected.length !== 6;
+            renderInventory();
+        };
+        grid.appendChild(d);
+    });
 }
+
+function showSelect(m) { state.isMultiplayer = m; renderInventory(); showScreen('screen-select'); }
 updateHUD();
 </script>
 </body>
